@@ -25,9 +25,8 @@ namespace V1_0 {
 namespace samsung {
 
 bool KeyDisabler::isSupported() {
-    std::ofstream file(KEY_DISABLER_NODE);
-    return file.good();
-}
+        return true;
+    }
 
 // Methods from ::vendor::lineage::touch::V1_0::IKeyDisabler follow.
 Return<bool> KeyDisabler::isEnabled() {
