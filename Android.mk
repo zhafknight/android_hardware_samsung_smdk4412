@@ -49,4 +49,5 @@ include $(SAM_ROOT)/liblights/Android.mk
 include $(SAM_ROOT)/modemloader/Android.mk
 include $(SAM_ROOT)/ril/Android.mk
 include $(SAM_ROOT)/consumerir/Android.mk
+include $(SAM_ROOT)/SamsungServiceMode/Android.mk
 endif
