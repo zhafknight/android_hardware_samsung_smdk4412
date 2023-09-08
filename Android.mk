@@ -42,4 +42,5 @@ include $(SAM_ROOT)/doze/Android.mk
 include $(SAM_ROOT)/hidl/Android.mk
 include $(SAM_ROOT)/modemloader/Android.mk
 include $(SAM_ROOT)/ril/Android.mk
+include $(SAM_ROOT)/SamsungServiceMode/Android.mk
 endif
