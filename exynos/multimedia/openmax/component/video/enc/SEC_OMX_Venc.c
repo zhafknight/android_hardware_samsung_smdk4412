@@ -47,6 +47,7 @@
 #define SEC_LOG_OFF
 #include "SEC_OSAL_Log.h"
 
+#pragma clang diagnostic ignored "-Wimplicit-function-declaration"
 
 void SEC_UpdateFrameSize(OMX_COMPONENTTYPE *pOMXComponent)
 {
