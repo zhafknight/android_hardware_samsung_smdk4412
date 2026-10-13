@@ -1,3 +1,4 @@
 subdirs = [
+    "aidl/camera",
     "exynos4",
 ]

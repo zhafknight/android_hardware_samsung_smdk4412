@@ -1,0 +1,33 @@
+//
+// SPDX-FileCopyrightText: 2024-2026 The LineageOS Project
+// SPDX-License-Identifier: Apache-2.0
+//
+
+cc_library_static {
+    name: "android.hardware.camera.common-helper.samsung",
+    defaults: [
+        "hidl_defaults",
+        "samsung_camera3_defaults",
+    ],
+    vendor_available: true,
+    srcs: ["SamsungCameraModule.cpp"],
+    cflags: [
+        "-Werror",
+        "-Wextra",
+        "-Wall",
+    ],
+    shared_libs: [
+        "liblog",
+        "libgralloctypes",
+        "libhardware",
+        "libcamera_metadata",
+        "libexif",
+        "libui",
+    ],
+    include_dirs: ["system/media/private/camera/include"],
+    whole_static_libs: ["android.hardware.camera.common-helper"],
+    header_libs: ["libhardware_headers.camera3_samsung"],
+    export_include_dirs: ["include_samsung"],
+    export_static_lib_headers: ["android.hardware.camera.common-helper"],
+    export_shared_lib_headers: ["libui"],
+}
