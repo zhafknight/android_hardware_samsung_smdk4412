@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 The LineageOS Project
+ * Copyright (C) 2021-2023 The LineageOS Project
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -7,16 +7,43 @@
 #include "Vibrator.h"
 
 #include <android-base/logging.h>
+#include <android-base/properties.h>
 
+#include <fcntl.h>
 #include <cmath>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <thread>
+
+#include <linux/input.h>
 
 namespace aidl {
 namespace android {
 namespace hardware {
 namespace vibrator {
+
+const std::string kVibratorPropPrefix = "ro.vendor.vibrator_hal.";
+const std::string kVibratorPropDuration = "_duration";
+
+static std::map<Effect, int> CP_TRIGGER_EFFECTS{{Effect::CLICK, 10},
+                                                {Effect::DOUBLE_CLICK, 14},
+                                                {Effect::HEAVY_CLICK, 23},
+                                                {Effect::TEXTURE_TICK, 50},
+                                                {Effect::TICK, 50}};
+
+static std::map<Effect, short> FF_EFFECT_IDS{{Effect::CLICK, 1},
+                                             {Effect::DOUBLE_CLICK, 5},
+                                             {Effect::TICK, 41},
+                                             {Effect::HEAVY_CLICK, 14},
+                                             {Effect::TEXTURE_TICK, 41}};
+
+#ifdef VIBRATOR_SUPPORTS_DURATION_AMPLITUDE_CONTROL
+static std::map<EffectStrength, float> DURATION_AMPLITUDE = {
+        {EffectStrength::LIGHT, DURATION_AMPLITUDE_LIGHT},
+        {EffectStrength::MEDIUM, DURATION_AMPLITUDE_MEDIUM},
+        {EffectStrength::STRONG, DURATION_AMPLITUDE_STRONG}};
+#endif
 
 /*
  * Write value to path and close file.
@@ -45,19 +72,48 @@ static bool nodeExists(const std::string& path) {
     return f.good();
 }
 
+static int getIntProperty(const std::string& key, int def) {
+    return ::android::base::GetIntProperty(kVibratorPropPrefix + key, def);
+}
+
 Vibrator::Vibrator() {
     mIsTimedOutVibrator = nodeExists(VIBRATOR_TIMEOUT_PATH);
+    if (!mIsTimedOutVibrator) {
+        for (const auto& file : std::filesystem::directory_iterator("/dev/input")) {
+            auto fd = open(file.path().c_str(), O_RDWR);
+            if (fd != -1) {
+                char name[32];
+                ioctl(fd, EVIOCGNAME(sizeof(name)), name);
+                if (strcmp("sec_vibrator_inputff", name) == 0) {
+                    mVibratorFd = fd;
+                    mIsForceFeedbackVibrator = true;
+                    writeNode("/sys/class/sec_vib_inputff/control/use_sep_index", 1);
+                    break;
+                }
+                close(fd);
+            }
+        }
+    }
     mHasTimedOutIntensity = nodeExists(VIBRATOR_INTENSITY_PATH);
+    mHasTimedOutEffect = nodeExists(VIBRATOR_CP_TRIGGER_PATH);
 }
 
 ndk::ScopedAStatus Vibrator::getCapabilities(int32_t* _aidl_return) {
     *_aidl_return = IVibrator::CAP_ON_CALLBACK | IVibrator::CAP_PERFORM_CALLBACK |
                     IVibrator::CAP_EXTERNAL_CONTROL /*| IVibrator::CAP_COMPOSE_EFFECTS |
-                    IVibrator::CAP_ALWAYS_ON_CONTROL*/;
+                    IVibrator::CAP_ALWAYS_ON_CONTROL*/
+            ;
 
-    if (mHasTimedOutIntensity) {
-        *_aidl_return = *_aidl_return | IVibrator::CAP_AMPLITUDE_CONTROL |
-                        IVibrator::CAP_EXTERNAL_AMPLITUDE_CONTROL;
+#ifdef VIBRATOR_SUPPORTS_DURATION_AMPLITUDE_CONTROL
+    *_aidl_return |= IVibrator::CAP_AMPLITUDE_CONTROL | IVibrator::CAP_EXTERNAL_AMPLITUDE_CONTROL;
+#else
+    if (mHasTimedOutIntensity)
+        *_aidl_return |=
+                IVibrator::CAP_AMPLITUDE_CONTROL | IVibrator::CAP_EXTERNAL_AMPLITUDE_CONTROL;
+#endif
+
+    if (mIsForceFeedbackVibrator) {
+        *_aidl_return |= IVibrator::CAP_AMPLITUDE_CONTROL;
     }
 
     return ndk::ScopedAStatus::ok();
@@ -67,14 +123,29 @@ ndk::ScopedAStatus Vibrator::off() {
     return activate(0);
 }
 
-ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs, const std::shared_ptr<IVibratorCallback>& callback) {
-    ndk::ScopedAStatus status = activate(timeoutMs);
+ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs,
+                                const std::shared_ptr<IVibratorCallback>& callback) {
+    ndk::ScopedAStatus status;
+
+    if (mHasTimedOutEffect) {
+        writeNode(VIBRATOR_CP_TRIGGER_PATH, 0);  // Clear all effects
+    }
+
+    if (mIsForceFeedbackVibrator) {
+        uploadFFEffect({0}, timeoutMs);
+    }
+
+#ifdef VIBRATOR_SUPPORTS_DURATION_AMPLITUDE_CONTROL
+    timeoutMs *= mDurationAmplitude;
+#endif
+
+    status = activate(timeoutMs);
 
     if (callback != nullptr) {
         std::thread([=] {
-            LOG(INFO) << "Starting on on another thread";
+            LOG(DEBUG) << "Starting on on another thread";
             usleep(timeoutMs * 1000);
-            LOG(INFO) << "Notifying on complete";
+            LOG(DEBUG) << "Notifying on complete";
             if (!callback->onComplete().isOk()) {
                 LOG(ERROR) << "Failed to call onComplete";
             }
@@ -84,28 +155,52 @@ ndk::ScopedAStatus Vibrator::on(int32_t timeoutMs, const std::shared_ptr<IVibrat
     return status;
 }
 
-ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength strength, const std::shared_ptr<IVibratorCallback>& callback, int32_t* _aidl_return) {
+ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength strength,
+                                     const std::shared_ptr<IVibratorCallback>& callback,
+                                     int32_t* _aidl_return) {
     ndk::ScopedAStatus status;
-    uint8_t amplitude;
-    uint32_t ms;
+    float amplitude = strengthToAmplitude(strength, &status);
+    uint32_t ms = 1000;
 
-    amplitude = strengthToAmplitude(strength, &status);
     if (!status.isOk()) {
         return status;
     }
+
+    if (mIsTimedOutVibrator) {
+        activate(0);
+    }
+
     setAmplitude(amplitude);
 
-    ms = effectToMs(effect, &status);
-    if (!status.isOk()) {
-        return status;
+    if (mHasTimedOutEffect && CP_TRIGGER_EFFECTS.find(effect) != CP_TRIGGER_EFFECTS.end()) {
+        writeNode(VIBRATOR_CP_TRIGGER_PATH, CP_TRIGGER_EFFECTS[effect]);
+    } else if (mIsForceFeedbackVibrator) {
+        if (FF_EFFECT_IDS.find(effect) == FF_EFFECT_IDS.end())
+            return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+        uploadFFEffect({0, FF_EFFECT_IDS.at(effect)}, 0);
+    } else {
+        if (mHasTimedOutEffect) {
+            writeNode(VIBRATOR_CP_TRIGGER_PATH, 0);  // Clear previous effect
+        }
+
+        ms = effectToMs(effect, &status);
+
+        if (!status.isOk()) {
+            return status;
+        }
     }
+
+#ifdef VIBRATOR_SUPPORTS_DURATION_AMPLITUDE_CONTROL
+    ms *= DURATION_AMPLITUDE[strength];
+#endif
+
     status = activate(ms);
 
     if (callback != nullptr) {
         std::thread([=] {
-            LOG(INFO) << "Starting perform on another thread";
+            LOG(DEBUG) << "Starting perform on another thread";
             usleep(ms * 1000);
-            LOG(INFO) << "Notifying perform complete";
+            LOG(DEBUG) << "Notifying perform complete";
             callback->onComplete();
         }).detach();
     }
@@ -115,35 +210,49 @@ ndk::ScopedAStatus Vibrator::perform(Effect effect, EffectStrength strength, con
 }
 
 ndk::ScopedAStatus Vibrator::getSupportedEffects(std::vector<Effect>* _aidl_return) {
-    *_aidl_return = {Effect::CLICK, Effect::DOUBLE_CLICK, Effect::HEAVY_CLICK,
-                     Effect::TICK, Effect::TEXTURE_TICK, Effect::THUD, Effect::POP,
-                     Effect::RINGTONE_1, Effect::RINGTONE_2, Effect::RINGTONE_3,
-                     Effect::RINGTONE_4, Effect::RINGTONE_5, Effect::RINGTONE_6,
-                     Effect::RINGTONE_7, Effect::RINGTONE_7, Effect::RINGTONE_8,
-                     Effect::RINGTONE_9, Effect::RINGTONE_10, Effect::RINGTONE_11,
-                     Effect::RINGTONE_12, Effect::RINGTONE_13, Effect::RINGTONE_14,
-                     Effect::RINGTONE_15};
+    *_aidl_return = {Effect::CLICK, Effect::TICK, Effect::TEXTURE_TICK};
+
+    if (mHasTimedOutEffect) {
+        for (const auto& effect : CP_TRIGGER_EFFECTS) {
+            _aidl_return->push_back(effect.first);
+        }
+    }
     return ndk::ScopedAStatus::ok();
 }
 
 ndk::ScopedAStatus Vibrator::setAmplitude(float amplitude) {
     uint32_t intensity;
 
-    if (amplitude == 0) {
-        return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
+    if (amplitude <= 0.0f || amplitude > 1.0f) {
+        return ndk::ScopedAStatus(AStatus_fromExceptionCode(EX_ILLEGAL_ARGUMENT));
     }
 
-    LOG(DEBUG) << "Setting amplitude: " << (uint32_t)amplitude;
+#ifdef VIBRATOR_SUPPORTS_DURATION_AMPLITUDE_CONTROL
+    mDurationAmplitude = durationAmplitude(amplitude);
+#endif
 
-    intensity = std::lround((amplitude - 1) * INTENSITY_MAX / 254.0);
-    if (intensity > INTENSITY_MAX) {
-        intensity = INTENSITY_MAX;
-    }
+    LOG(DEBUG) << "Setting amplitude: " << amplitude;
+
+    intensity = amplitude * INTENSITY_MAX;
+
+#ifndef VIBRATOR_SUPPORTS_DURATION_AMPLITUDE_CONTROL
     LOG(DEBUG) << "Setting intensity: " << intensity;
 
     if (mHasTimedOutIntensity) {
         return writeNode(VIBRATOR_INTENSITY_PATH, intensity);
     }
+
+    if (mIsForceFeedbackVibrator) {
+        struct input_event event{
+                .type = EV_FF,
+                .code = FF_GAIN,
+                .value = static_cast<__s32>(intensity),
+        };
+        if (write(mVibratorFd, &event, sizeof(event)) == -1)
+            return ndk::ScopedAStatus::fromExceptionCode(STATUS_UNKNOWN_ERROR);
+        return ndk::ScopedAStatus::ok();
+    }
+#endif
 
     return ndk::ScopedAStatus::ok();
 }
@@ -168,15 +277,18 @@ ndk::ScopedAStatus Vibrator::getCompositionSizeMax(int32_t* /*_aidl_return*/) {
     return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
 }
 
-ndk::ScopedAStatus Vibrator::getSupportedPrimitives(std::vector<CompositePrimitive>* /*_aidl_return*/) {
+ndk::ScopedAStatus Vibrator::getSupportedPrimitives(
+        std::vector<CompositePrimitive>* /*_aidl_return*/) {
     return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
 }
 
-ndk::ScopedAStatus Vibrator::getPrimitiveDuration(CompositePrimitive /*primitive*/, int32_t* /*_aidl_return*/) {
+ndk::ScopedAStatus Vibrator::getPrimitiveDuration(CompositePrimitive /*primitive*/,
+                                                  int32_t* /*_aidl_return*/) {
     return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
 }
 
-ndk::ScopedAStatus Vibrator::compose(const std::vector<CompositeEffect>& /*composite*/, const std::shared_ptr<IVibratorCallback>& /*callback*/) {
+ndk::ScopedAStatus Vibrator::compose(const std::vector<CompositeEffect>& /*composite*/,
+                                     const std::shared_ptr<IVibratorCallback>& /*callback*/) {
     return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
 }
 
@@ -184,7 +296,8 @@ ndk::ScopedAStatus Vibrator::getSupportedAlwaysOnEffects(std::vector<Effect>* /*
     return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
 }
 
-ndk::ScopedAStatus Vibrator::alwaysOnEnable(int32_t /*id*/, Effect /*effect*/, EffectStrength /*strength*/) {
+ndk::ScopedAStatus Vibrator::alwaysOnEnable(int32_t /*id*/, Effect /*effect*/,
+                                            EffectStrength /*strength*/) {
     return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
 }
 
@@ -224,29 +337,71 @@ ndk::ScopedAStatus Vibrator::getSupportedBraking(std::vector<Braking>* /*_aidl_r
     return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
 }
 
-ndk::ScopedAStatus Vibrator::composePwle(const std::vector<PrimitivePwle>& /*composite*/, const std::shared_ptr<IVibratorCallback>& /*callback*/) {
+ndk::ScopedAStatus Vibrator::composePwle(const std::vector<PrimitivePwle>& /*composite*/,
+                                         const std::shared_ptr<IVibratorCallback>& /*callback*/) {
     return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
 }
 
 ndk::ScopedAStatus Vibrator::activate(uint32_t timeoutMs) {
     std::lock_guard<std::mutex> lock{mMutex};
-    if (!mIsTimedOutVibrator) {
-        return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
+    if (mIsTimedOutVibrator) {
+        return writeNode(VIBRATOR_TIMEOUT_PATH, timeoutMs);
     }
-
-    return writeNode(VIBRATOR_TIMEOUT_PATH, timeoutMs);
+    if (mIsForceFeedbackVibrator) {
+        struct input_event event{
+                .type = EV_FF,
+                .code = 0,
+                .value = timeoutMs != 0,
+        };
+        if (write(mVibratorFd, &event, sizeof(event)) == -1)
+            return ndk::ScopedAStatus::fromExceptionCode(STATUS_UNKNOWN_ERROR);
+        return ndk::ScopedAStatus::ok();
+    }
+    return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
 }
 
-uint8_t Vibrator::strengthToAmplitude(EffectStrength strength, ndk::ScopedAStatus* status) {
+ndk::ScopedAStatus Vibrator::uploadFFEffect(std::vector<int16_t> effectData, int timeoutMs) {
+    int ret;
+
+    // Remove previously uploaded effect in case it exists
+    ret = ioctl(mVibratorFd, EVIOCRMFF, 0);
+    if (ret == -1) {
+        LOG(WARNING) << "Failed to remove effect";
+    }
+
+    struct ff_effect effect = {
+            .type = FF_PERIODIC,
+            .id = -1,
+            .replay =
+                    {
+                            .length = static_cast<uint16_t>(timeoutMs),
+                    },
+            .u.periodic =
+                    {
+                            .waveform = FF_CUSTOM,
+                            .custom_len = static_cast<uint32_t>(effectData.size()),
+                            .custom_data = effectData.data(),
+                    },
+    };
+
+    ret = ioctl(mVibratorFd, EVIOCSFF, &effect);
+    if (ret == -1) {
+        LOG(ERROR) << "Effect upload failed: " << errno;
+        return ndk::ScopedAStatus::fromStatus(STATUS_UNKNOWN_ERROR);
+    }
+    return ndk::ScopedAStatus::ok();
+}
+
+float Vibrator::strengthToAmplitude(EffectStrength strength, ndk::ScopedAStatus* status) {
     *status = ndk::ScopedAStatus::ok();
 
     switch (strength) {
         case EffectStrength::LIGHT:
-            return 64;
+            return AMPLITUDE_LIGHT;
         case EffectStrength::MEDIUM:
-            return 128;
+            return AMPLITUDE_MEDIUM;
         case EffectStrength::STRONG:
-            return 255;
+            return AMPLITUDE_STRONG;
     }
 
     *status = ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
@@ -255,42 +410,33 @@ uint8_t Vibrator::strengthToAmplitude(EffectStrength strength, ndk::ScopedAStatu
 
 uint32_t Vibrator::effectToMs(Effect effect, ndk::ScopedAStatus* status) {
     *status = ndk::ScopedAStatus::ok();
-
     switch (effect) {
         case Effect::CLICK:
-            return 20;
-        case Effect::DOUBLE_CLICK:
-            return 25;
-        case Effect::HEAVY_CLICK:
-            return 30;
+            return getIntProperty("click" + kVibratorPropDuration, 10);
         case Effect::TICK:
+            return getIntProperty("tick" + kVibratorPropDuration, 5);
         case Effect::TEXTURE_TICK:
-        case Effect::THUD:
-        case Effect::POP:
-            return 15;
-        case Effect::RINGTONE_1:
-        case Effect::RINGTONE_2:
-        case Effect::RINGTONE_3:
-        case Effect::RINGTONE_4:
-        case Effect::RINGTONE_5:
-        case Effect::RINGTONE_6:
-        case Effect::RINGTONE_7:
-        case Effect::RINGTONE_8:
-        case Effect::RINGTONE_9:
-        case Effect::RINGTONE_10:
-        case Effect::RINGTONE_11:
-        case Effect::RINGTONE_12:
-        case Effect::RINGTONE_13:
-        case Effect::RINGTONE_14:
-        case Effect::RINGTONE_15:
-            return 300;
+            return getIntProperty("texture_tick" + kVibratorPropDuration, 5);
+        default:
+            break;
     }
-
     *status = ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
     return 0;
 }
 
-} // namespace vibrator
-} // namespace hardware
-} // namespace android
-} // namespace aidl
+#ifdef VIBRATOR_SUPPORTS_DURATION_AMPLITUDE_CONTROL
+float Vibrator::durationAmplitude(float amplitude) {
+    if (amplitude == 1) {
+        return DURATION_AMPLITUDE_STRONG;
+    } else if (amplitude >= 0.5) {
+        return DURATION_AMPLITUDE_MEDIUM;
+    }
+
+    return DURATION_AMPLITUDE_LIGHT;
+}
+#endif
+
+}  // namespace vibrator
+}  // namespace hardware
+}  // namespace android
+}  // namespace aidl

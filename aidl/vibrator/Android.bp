@@ -1,6 +1,5 @@
 //
-// Copyright (C) 2021 The LineageOS Project
-//
+// SPDX-FileCopyrightText: 2021-2026 The LineageOS Project
 // SPDX-License-Identifier: Apache-2.0
 //
 
@@ -9,6 +8,10 @@ cc_binary {
     relative_install_path: "hw",
     init_rc: ["android.hardware.vibrator-service.samsung.rc"],
     vintf_fragments: ["android.hardware.vibrator-service.samsung.xml"],
+    cppflags: select(soong_config_variable("samsungVibratorVars", "duration_amplitude"), {
+        true: ["-DVIBRATOR_SUPPORTS_DURATION_AMPLITUDE_CONTROL"],
+        default: [],
+    }),
     srcs: [
         "Vibrator.cpp",
         "service.cpp",
