@@ -18,7 +18,7 @@ ifeq ($(TARGET_SLSI_VARIANT),)
 
 ifeq ($(TARGET_BOARD_PLATFORM),exynos4)
 
-common_exynos4_dirs := libEGL_mali libgralloc_ump libGLESv2_mali libhwconverter libsecion libUMP libhwc
+common_exynos4_dirs := libEGL_mali libGLESv2_mali libhwconverter libsecion libUMP
 
 ifneq ($(BOARD_USES_PROPRIETARY_LIBCAMERA),true)
 common_exynos4_dirs += libcamera
