@@ -1,0 +1,77 @@
+cc_library_shared {
+    name: "libgralloc5",
+    vendor: true,
+    compile_multilib: "32",
+    srcs: ["backend/BufferManager.cpp"],
+    include_dirs: ["hardware/samsung/exynos4/hal/include"],
+    export_include_dirs: ["."],
+    shared_libs: [
+        "android.hardware.graphics.common-V7-ndk",
+        "libcutils",
+        "liblog",
+        "libsecion",
+        "libUMP",
+    ],
+}
+
+// The proprietary Mali-400 EGL/GLES blob predates Mapper and still resolves
+// hw_get_module("gralloc").  This is only its Gralloc0 registration/CPU-lock
+// frontend; allocation and framework imports remain on Allocator V2/Mapper5.
+cc_library_shared {
+    name: "gralloc.exynos4",
+    vendor: true,
+    compile_multilib: "32",
+    relative_install_path: "hw",
+    srcs: ["legacy/MaliCompat.cpp"],
+    include_dirs: ["hardware/samsung/exynos4/hal/include"],
+    shared_libs: [
+        "libcutils",
+        "libhardware",
+        "liblog",
+        "libUMP",
+        "libgralloc5",
+    ],
+    cpp_std: "c++20",
+}
+
+cc_binary {
+    name: "android.hardware.graphics.allocator-service.exynos4",
+    vendor: true,
+    compile_multilib: "32",
+    relative_install_path: "hw",
+    srcs: ["allocator/Allocator.cpp", "allocator/service.cpp"],
+    include_dirs: ["hardware/samsung/exynos4/hal/include"],
+    init_rc: ["allocator/exynos4-allocator.rc"],
+    vintf_fragments: ["allocator/exynos4-allocator.xml"],
+    shared_libs: [
+        "android.hardware.graphics.allocator-V2-ndk",
+        "android.hardware.graphics.common-V7-ndk",
+        "libbinder_ndk",
+        "libcutils",
+        "liblog",
+        "libgralloc5",
+    ],
+    static_libs: ["libaidlcommonsupport"],
+}
+
+cc_library_shared {
+    name: "mapper.exynos4",
+    vendor: true,
+    compile_multilib: "32",
+    relative_install_path: "hw",
+    srcs: ["mapper/Mapper.cpp"],
+    include_dirs: ["hardware/samsung/exynos4/hal/include"],
+    header_libs: ["libimapper_stablec", "libimapper_providerutils"],
+    shared_libs: [
+        "android.hardware.graphics.common-V7-ndk",
+        "libbase",
+        "libcutils",
+        "libdrm",
+        "liblog",
+        "libsync",
+        "libgralloc5",
+        "libsecion",
+        "libUMP",
+    ],
+    cpp_std: "c++20",
+}

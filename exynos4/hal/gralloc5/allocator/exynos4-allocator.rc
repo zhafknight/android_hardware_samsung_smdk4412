@@ -1,0 +1,5 @@
+service vendor.graphics.allocator /vendor/bin/hw/android.hardware.graphics.allocator-service.exynos4
+    class hal animation
+    user system
+    group graphics
+    onrestart restart surfaceflinger

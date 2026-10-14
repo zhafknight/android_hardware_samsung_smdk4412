@@ -1,0 +1,6 @@
+service vendor.hwcomposer-3 /vendor/bin/hw/android.hardware.graphics.composer3-service.exynos4
+    class hal animation
+    user system
+    group graphics
+    onrestart restart surfaceflinger
+    task_profiles ServiceCapacityLow

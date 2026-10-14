@@ -1,0 +1,25 @@
+cc_binary {
+    name: "android.hardware.graphics.composer3-service.exynos4",
+    vendor: true,
+    compile_multilib: "32",
+    relative_install_path: "hw",
+    srcs: ["ComposerClient.cpp", "DisplayBackend.cpp", "service.cpp"],
+    init_rc: ["composer3.rc"],
+    vintf_fragments: ["composer3.xml"],
+    include_dirs: [
+        "hardware/samsung/exynos4/hal/gralloc5",
+        "hardware/samsung/exynos4/hal/include",
+    ],
+    shared_libs: [
+        "android.hardware.graphics.composer3-V4-ndk",
+        "android.hardware.graphics.common-V7-ndk",
+        "libbase",
+        "libbinder_ndk",
+        "libcutils",
+        "liblog",
+        "libsync",
+        "libgralloc5",
+    ],
+    static_libs: ["libaidlcommonsupport"],
+    cpp_std: "c++20",
+}
