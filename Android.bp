@@ -1,5 +1,8 @@
 subdirs = [
     "aidl/camera",
+    "ril/libril",
+    "ril/libsecril-client",
+    "ril/libsecril-client-sap",
     "exynos4",
 ]
 

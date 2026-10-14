@@ -1,0 +1,19 @@
+// Copyright 2006 The Android Open Source Project
+// SPDX-License-Identifier: Apache-2.0
+
+cc_library_shared {
+    name: "libsecril-client-sap",
+    vendor: true,
+
+    srcs: ["secril-client-sap.cpp"],
+
+    header_libs: ["ril_headers"],
+
+    shared_libs: [
+        "libbinder",
+        "libcutils",
+        "libhardware_legacy",
+        "liblog",
+        "libutils",
+    ],
+}
