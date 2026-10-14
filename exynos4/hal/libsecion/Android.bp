@@ -1,0 +1,8 @@
+cc_library_shared {
+    name: "libsecion",
+    vendor: true,
+    compile_multilib: "32",
+    srcs: ["libsecion.cpp"],
+    include_dirs: ["hardware/samsung/exynos4/hal/include"],
+    shared_libs: ["liblog", "libcutils"],
+}
