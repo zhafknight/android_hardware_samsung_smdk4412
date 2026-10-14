@@ -1,3 +1,13 @@
 subdirs = [
     "libfimg4x",
 ]
+
+filegroup {
+    name: "smdk4x12_jpeg_hal_sources",
+    srcs: ["libhwjpeg/jpeg_hal_unit.cpp"],
+}
+
+filegroup {
+    name: "smdk4x12_fimc_sources",
+    srcs: ["libfimc/SecFimc.cpp"],
+}
