@@ -318,19 +318,10 @@ class Mapper final : public vendor::mapper::IMapperV5Impl {
                   buffer->data[kFormat]);
             return AIMAPPER_ERROR_BAD_VALUE;
         }
-        // Synchronize the same UMP mapping that was given to Mali and will be
-        // returned to the CPU producer; do not create another cache alias.
-        const int client = ion_client_create();
-        if (client < 0) return AIMAPPER_ERROR_NO_RESOURCES;
-        const int rc = ion_msync(client, buffer->data[kFd], IMSYNC_DEV_TO_RW | IMSYNC_SYNC_FOR_CPU,
-                                 state.size, 0);
-        ion_client_destroy(client);
-        if (rc < 0) return AIMAPPER_ERROR_NO_RESOURCES;
+        // One UMP sync covers both cache levels. The ION msync ioctl flushes
+        // all CPU caches for buffers over 1 MiB, and switching UMP ownership
+        // would repeat this synchronization on every camera frame.
         ump_cpu_msync_now(state.ump, UMP_MSYNC_INVALIDATE, nullptr, state.size);
-        // The legacy UMP userspace ABI returns 1 for success and 0 for
-        // failure. It is a boolean result, not an errno-style status.
-        if (!ump_switch_hw_usage(state.ump, UMP_USED_BY_CPU))
-            return AIMAPPER_ERROR_NO_RESOURCES;
         state.write = (cpuUsage & 0xf0) != 0;
         state.locked = true;
         *out = state.address;
@@ -346,15 +337,7 @@ class Mapper final : public vendor::mapper::IMapperV5Impl {
         ImportState& state = it->second;
         if (state.write) {
             ump_cpu_msync_now(state.ump, UMP_MSYNC_CLEAN_AND_INVALIDATE, nullptr, state.size);
-            const int client = ion_client_create();
-            if (client < 0) return AIMAPPER_ERROR_NO_RESOURCES;
-            const int rc = ion_msync(client, buffer->data[kFd],
-                                     IMSYNC_DEV_TO_RW | IMSYNC_SYNC_FOR_DEV, state.size, 0);
-            ion_client_destroy(client);
-            if (rc < 0) return AIMAPPER_ERROR_NO_RESOURCES;
         }
-        if (!ump_switch_hw_usage(state.ump, UMP_USED_BY_UNKNOWN_DEVICE))
-            return AIMAPPER_ERROR_NO_RESOURCES;
         state.locked = false;
         *releaseFence = -1;  // Synchronous cache maintenance has completed.
         return AIMAPPER_ERROR_NONE;
@@ -365,12 +348,6 @@ class Mapper final : public vendor::mapper::IMapperV5Impl {
         auto it = mImports.find(buffer);
         if (it == mImports.end() || !it->second.locked) return AIMAPPER_ERROR_BAD_BUFFER;
         ump_cpu_msync_now(it->second.ump, UMP_MSYNC_CLEAN, nullptr, it->second.size);
-        const int client = ion_client_create();
-        if (client < 0) return AIMAPPER_ERROR_NO_RESOURCES;
-        const int rc = ion_msync(client, buffer->data[kFd], IMSYNC_DEV_TO_RW | IMSYNC_SYNC_FOR_DEV,
-                                 it->second.size, 0);
-        ion_client_destroy(client);
-        if (rc < 0) return AIMAPPER_ERROR_NO_RESOURCES;
         return AIMAPPER_ERROR_NONE;
     }
 
@@ -379,12 +356,6 @@ class Mapper final : public vendor::mapper::IMapperV5Impl {
         auto it = mImports.find(buffer);
         if (it == mImports.end() || !it->second.locked) return AIMAPPER_ERROR_BAD_BUFFER;
         ump_cpu_msync_now(it->second.ump, UMP_MSYNC_INVALIDATE, nullptr, it->second.size);
-        const int client = ion_client_create();
-        if (client < 0) return AIMAPPER_ERROR_NO_RESOURCES;
-        const int rc = ion_msync(client, buffer->data[kFd], IMSYNC_DEV_TO_RW | IMSYNC_SYNC_FOR_CPU,
-                                 it->second.size, 0);
-        ion_client_destroy(client);
-        if (rc < 0) return AIMAPPER_ERROR_NO_RESOURCES;
         return AIMAPPER_ERROR_NONE;
     }
 

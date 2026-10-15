@@ -179,12 +179,9 @@ native_handle_t* allocateBuffer(uint32_t width, uint32_t height, int32_t format,
     const size_t allocationSize = offset + kMetadataPageSize;
 
     // COMPOSER_OVERLAY is a possible consumer, not a promise that every
-    // GPU-rendered UI surface will be scanned out.  VIDEO_ENCODER also does
-    // not require it: this Samsung OMX encoder copies source pixels into its
-    // own MFC input buffers after a CPU-read lock.  FIMD requires a physical
+    // GPU-rendered UI surface will be scanned out. FIMD requires a physical
     // address, but ordinary RGB layers with GPU usage can be composed into
-    // the (contiguous) client target instead.  Reserving the small contiguous
-    // heap for all such layers exhausts it during animations and PiP.
+    // the contiguous client target.
     const uint64_t overlay = static_cast<uint64_t>(BufferUsage::COMPOSER_OVERLAY);
     const uint64_t gpu = static_cast<uint64_t>(BufferUsage::GPU_TEXTURE) |
                          static_cast<uint64_t>(BufferUsage::GPU_RENDER_TARGET);
@@ -295,7 +292,8 @@ native_handle_t* allocateBuffer(uint32_t width, uint32_t height, int32_t format,
     for (int i = 0; i <= kIonClient; ++i) h->data[i] = 0;
     h->data[kFd] = fd;
     h->data[kMagic] = kLegacyMagic;
-    h->data[kFlags] = kUsesUmp | kUsesIon | kGraphicBuffer | (contiguous ? kContiguousIon : 0);
+    h->data[kFlags] = kUsesUmp | kUsesIon | kGraphicBuffer |
+                      (contiguous ? kContiguousIon : 0);
     h->data[kSize] = static_cast<int>(allocationSize);
     h->data[kUmpId] = static_cast<int>(secureId);
     h->data[kPid] = getpid();

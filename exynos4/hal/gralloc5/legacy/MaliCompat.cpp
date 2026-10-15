@@ -106,11 +106,6 @@ int lockBuffer(const gralloc_module_t*, buffer_handle_t buffer, int usage,
     const bool write = (usage & GRALLOC_USAGE_SW_WRITE_MASK) != 0;
     if (registration.writeLocked || (write && registration.readLocks)) return -EBUSY;
 
-    if (!registration.readLocks && !registration.writeLocked &&
-        !ump_switch_hw_usage(registration.ump, UMP_USED_BY_CPU)) {
-        if (!registration.references) releaseRegistration(found);
-        return -EIO;
-    }
     if (usage & GRALLOC_USAGE_SW_READ_MASK) {
         ump_cpu_msync_now(registration.ump, UMP_MSYNC_CLEAN_AND_INVALIDATE, nullptr, 0);
     }
@@ -139,9 +134,7 @@ int unlockBuffer(const gralloc_module_t*, buffer_handle_t buffer) {
     }
 
     if (!registration.readLocks && !registration.writeLocked) {
-        const bool switched = ump_switch_hw_usage(registration.ump, UMP_USED_BY_UNKNOWN_DEVICE);
         if (!registration.references) releaseRegistration(found);
-        if (!switched) return -EIO;
     }
     return 0;
 }
