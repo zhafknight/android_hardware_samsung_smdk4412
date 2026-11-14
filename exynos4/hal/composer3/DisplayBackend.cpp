@@ -234,6 +234,14 @@ int DisplayBackend::convertVideo(const native_handle_t* source, int acquireFence
     return rc;
 }
 
+namespace {
+bool kernelAcquireFence() {
+    static const bool enabled =
+            property_get_int32("ro.vendor.exynos4.fimd_acquire_fence", 0) != 0;
+    return enabled;
+}
+}  // namespace
+
 int DisplayBackend::presentClientTarget(const native_handle_t* h, int acquireFence,
                                         android::base::unique_fd* presentFence) {
     if (mFramebuffer.get() < 0 || !presentFence || !validateHandle(h)) {
@@ -251,7 +259,8 @@ int DisplayBackend::presentClientTarget(const native_handle_t* h, int acquireFen
     }
     s3c_fb_pixel_format format;
     if (!displayFormat(h->data[kFormat], &format)) return -EINVAL;
-    if (acquireFence >= 0 && sync_wait(acquireFence, 3000) < 0) {
+    const bool kernelFence = acquireFence >= 0 && kernelAcquireFence();
+    if (acquireFence >= 0 && !kernelFence && sync_wait(acquireFence, 3000) < 0) {
         const int savedErrno = errno;
         ALOGE("GPU client-target acquire fence did not signal: fd=%d errno=%d (%s)",
               acquireFence, savedErrno, strerror(savedErrno));
@@ -273,6 +282,7 @@ int DisplayBackend::presentClientTarget(const native_handle_t* h, int acquireFen
     win.format = format;
     win.blending = S3C_FB_BLENDING_NONE;
     win.plane_alpha = 255;
+    if (kernelFence) win.fence_fd = acquireFence;
     win.x = 0;
     win.y = 0;
     win.w = mMode.width;
@@ -333,7 +343,9 @@ int DisplayBackend::presentWindows(const std::vector<Window>& windows,
                     static_cast<uint64_t>(source.width) * h->data[kBpp] >
                     static_cast<uint32_t>(h->data[kSize]))
             return -EINVAL;
-        if (source.acquireFence >= 0 && sync_wait(source.acquireFence, 3000) < 0)
+        const bool kernelFence = source.acquireFence >= 0 && kernelAcquireFence();
+        if (source.acquireFence >= 0 && !kernelFence &&
+            sync_wait(source.acquireFence, 3000) < 0)
             return -errno;
         win.state = s3c_fb_win_config::S3C_FB_WIN_STATE_BUFFER;
         win.fd = h->data[kFd];
@@ -343,6 +355,7 @@ int DisplayBackend::presentWindows(const std::vector<Window>& windows,
         win.format = format;
         win.blending = static_cast<s3c_fb_blending>(source.blending);
         win.plane_alpha = source.planeAlpha;
+        if (kernelFence) win.fence_fd = source.acquireFence;
     }
     if (ioctl(mFramebuffer.get(), S3CFB_WIN_CONFIG, &request) < 0) {
         const int error = errno;
