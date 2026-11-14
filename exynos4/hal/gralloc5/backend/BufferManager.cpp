@@ -38,6 +38,12 @@ constexpr uint64_t kNeedsPhysical = static_cast<uint64_t>(BufferUsage::COMPOSER_
                                     GRALLOC_USAGE_EXYNOS4_SCANOUT |
                                     GRALLOC_USAGE_EXYNOS4_CONTIGUOUS;
 
+bool optionalContiguousEnabled() {
+    static const bool enabled =
+            property_get_int32("ro.vendor.exynos4.gralloc.contig_overlay", 1) != 0;
+    return enabled;
+}
+
 std::once_flag umpOnce;
 bool umpReady = false;
 
@@ -212,15 +218,18 @@ native_handle_t* allocateBuffer(uint32_t width, uint32_t height, int32_t format,
                                      format == static_cast<int32_t>(PixelFormat::BGRA_8888) ||
                                      format == static_cast<int32_t>(PixelFormat::RGB_888) ||
                                      format == static_cast<int32_t>(PixelFormat::RGB_565));
-    const bool contiguous = (usage & kNeedsPhysical) ||
-                            ((usage & overlay) && !optionalGpuOverlay);
+    const bool mandatoryContiguous = (usage & kNeedsPhysical) ||
+                                     ((usage & overlay) && !optionalGpuOverlay);
+    const bool tryOptionalContiguous = !mandatoryContiguous && optionalGpuOverlay &&
+                                       optionalContiguousEnabled();
+    bool contiguous = mandatoryContiguous || tryOptionalContiguous;
     IonClientRef client;
     const int ionClient = client.get();
     if (ionClient < 0) {
         ALOGE("Cannot open ION client for %ux%u: errno=%d", width, height, errno);
         return nullptr;
     }
-    const unsigned int heap = static_cast<unsigned int>(
+    unsigned int heap = static_cast<unsigned int>(
             property_get_int32(contiguous ? "ro.vendor.exynos4.ion_contig_heap_mask"
                                           : "ro.vendor.exynos4.ion_heap_mask",
                                contiguous ? ION_HEAP_EXYNOS_CONTIG_MASK : ION_HEAP_EXYNOS_MASK));
@@ -228,7 +237,21 @@ native_handle_t* allocateBuffer(uint32_t width, uint32_t height, int32_t format,
         ALOGE("ION heap mask is zero for %ux%u contiguous=%d", width, height, contiguous);
         return nullptr;
     }
-    const int fd = ion_alloc(ionClient, allocationSize, contiguous ? 0x10000 : 0x1000, heap);
+    int fd = -1;
+    if (tryOptionalContiguous) {
+        fd = ion_alloc(ionClient, allocationSize, 0x10000, heap | ION_EXYNOS_OPTIONAL_MASK);
+        if (fd < 0) contiguous = false;
+    }
+    if (fd < 0 && tryOptionalContiguous) {
+        // Fall back to the regular heap.
+        heap = static_cast<unsigned int>(
+                property_get_int32("ro.vendor.exynos4.ion_heap_mask", ION_HEAP_EXYNOS_MASK));
+        if (!heap) {
+            ALOGE("ION heap mask is zero for %ux%u contiguous=0", width, height);
+            return nullptr;
+        }
+    }
+    if (fd < 0) fd = ion_alloc(ionClient, allocationSize, contiguous ? 0x10000 : 0x1000, heap);
     if (fd < 0) {
         ALOGE("Exynos4 ION alloc failed: %ux%u format=%d usage=0x%llx "
               "bytes=%zu heap=0x%x contiguous=%d, errno=%d",

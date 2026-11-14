@@ -52,6 +52,7 @@ typedef unsigned long ion_phys_addr_t;
 #define ION_HEAP_EXYNOS_CONTIG_MASK	(1 << 4)
 #define ION_HEAP_EXYNOS_MASK		(1 << 5)
 #define ION_HEAP_EXYNOS_USER_MASK	(1 << 6)
+#define ION_EXYNOS_OPTIONAL_MASK	(1u << 29)
 #define ION_EXYNOS_NONCACHE_MASK	(1 << (32 - 2)) /* it was BITS_PER_LONG */
 #define ION_EXYNOS_WRITE_MASK		(1 << (32 - 1)) /* it was BITS_PER_LONG */
 
